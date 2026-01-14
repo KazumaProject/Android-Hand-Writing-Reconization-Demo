@@ -9,6 +9,7 @@ import org.pytorch.Tensor
 class HiraCtcRecognizer(
     context: Context,
     modelAssetName: String = "model_torchscript.pt",
+    modelFilePath: String? = null, // ★追加：端末から選んだモデル（internalにコピーしたpath）を使う
     vocabAssetName: String = "vocab.json",
     private val cfg: PreprocessConfig = PreprocessConfig()
 ) {
@@ -16,8 +17,13 @@ class HiraCtcRecognizer(
     private val vocab: CtcVocab
 
     init {
-        val modelPath = AssetUtil.assetFilePath(context, modelAssetName)
-        module = Module.load(modelPath)
+        // ★ modelFilePath があればそちらを優先
+        module = if (modelFilePath != null) {
+            Module.load(modelFilePath)
+        } else {
+            val modelPath = AssetUtil.assetFilePath(context, modelAssetName)
+            Module.load(modelPath)
+        }
 
         val vocabJson =
             context.assets.open(vocabAssetName).bufferedReader(Charsets.UTF_8).use { it.readText() }
@@ -77,12 +83,10 @@ class HiraCtcRecognizer(
 
         val candidates = CtcBeamSearch.toPercents(top)
             .map { c ->
-                // prefix beam search は文字列そのまま返すが、念のため空や重複を軽く整形
                 val t = c.text
                 CtcCandidate(text = t, percent = c.percent)
             }
 
-        // 空文字だけ等が先頭に来た場合の見栄え調整（必要なら）
         return candidates.filter { it.text.isNotEmpty() }.ifEmpty { candidates }
     }
 
