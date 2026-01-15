@@ -5,7 +5,6 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Rect
 import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
@@ -24,7 +23,6 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 import kotlin.math.max
-import kotlin.math.min
 
 class InferFragment : Fragment(R.layout.fragment_infer) {
 
@@ -37,12 +35,21 @@ class InferFragment : Fragment(R.layout.fragment_infer) {
         requireContext().getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
 
-    // ---- auto infer (optional) ----
-    private var autoInferJob: Job? = null
-    private var lastInferredChangeCounter: Long = -1L
-
     // ---- preview ----
     private var lastPreviewBitmap: Bitmap? = null
+
+    // ---- active side ----
+    private var activeSide: DualDrawingComposerView.Side = DualDrawingComposerView.Side.A
+
+    // ---- composed strings ----
+    private val committed = StringBuilder()
+    private var pendingA: String = ""
+    private var pendingB: String = ""
+
+    // ---- jobs ----
+    private var inferJobA: Job? = null
+    private var inferJobB: Job? = null
+    private var commitOnSwitchJob: Job? = null
 
     // SAF: 端末から .pt を選択
     private val pickPtLauncher =
@@ -55,35 +62,30 @@ class InferFragment : Fragment(R.layout.fragment_infer) {
         _binding = FragmentInferBinding.bind(view)
 
         loadRecognizerFromPrefsOrDefault()
+        updateComposedText()
 
         // ---- Stroke width init & SeekBar (Preference復元) ----
-        // SeekBar max は XML 側に依存するので、まず max を見た上で clamp する
         val savedStrokePx = prefs.getInt(KEY_STROKE_WIDTH_PX, DEFAULT_STROKE_WIDTH_PX)
         val maxStroke = binding.strokeSeekBarInfer.max.coerceAtLeast(1)
         val initialProgress = savedStrokePx.coerceIn(1, maxStroke)
 
         binding.strokeSeekBarInfer.progress = initialProgress
-        binding.drawingViewInfer.setStrokeWidthPx(initialProgress.toFloat())
+        binding.dualDrawingViewInfer.setStrokeWidthPx(initialProgress.toFloat())
         binding.strokeValueInfer.text = "${initialProgress} px"
-        //binding.drawingViewInfer.setGuideGridStepPx(64)
 
         binding.strokeSeekBarInfer.setOnSeekBarChangeListener(object :
             SeekBar.OnSeekBarChangeListener {
 
             override fun onProgressChanged(seekBar: SeekBar, progress: Int, fromUser: Boolean) {
                 val px = progress.coerceAtLeast(1)
-                binding.drawingViewInfer.setStrokeWidthPx(px.toFloat())
+                binding.dualDrawingViewInfer.setStrokeWidthPx(px.toFloat())
                 binding.strokeValueInfer.text = "${px} px"
-
-                // ここで都度保存（スライド中も保存したい場合）
-                // ユーザーが以前そうしていた可能性があるため、ここで保存しておく
                 saveStrokeWidthPx(px)
             }
 
             override fun onStartTrackingTouch(seekBar: SeekBar) {}
 
             override fun onStopTrackingTouch(seekBar: SeekBar) {
-                // 念のため停止時にも保存
                 val px = seekBar.progress.coerceAtLeast(1)
                 saveStrokeWidthPx(px)
             }
@@ -92,11 +94,8 @@ class InferFragment : Fragment(R.layout.fragment_infer) {
         // ---- Preview switch ----
         binding.previewSwitch.setOnCheckedChangeListener { _, isChecked ->
             binding.previewImageViewInfer.visibility = if (isChecked) View.VISIBLE else View.GONE
-            if (!isChecked) {
-                clearPreview()
-            }
+            if (!isChecked) clearPreview()
         }
-        // 初期状態（XMLのcheckedに従う）
         binding.previewImageViewInfer.visibility =
             if (binding.previewSwitch.isChecked) View.VISIBLE else View.GONE
 
@@ -116,51 +115,233 @@ class InferFragment : Fragment(R.layout.fragment_infer) {
             clearPreview()
         }
 
-        // ---- Auto infer switch (optional) ----
-        binding.autoInferSwitch.setOnCheckedChangeListener { _, isChecked ->
-            if (!isChecked) {
-                autoInferJob?.cancel()
-                binding.resultText.text = "(auto infer off)"
-            } else {
-                scheduleAutoInfer("switch_on")
+        // ---- Dual view callbacks ----
+        binding.dualDrawingViewInfer.onStrokeStarted = { side ->
+            activeSide = side
+            val other = otherSide(side)
+
+            // 「別のDrawingViewに指が触れたタイミング」= ACTION_DOWN
+            // -> 反対側の pending（検知中文字）を確定して committed に移す
+            commitOnSwitchJob?.cancel()
+            commitOnSwitchJob = lifecycleScope.launch {
+                commitSideIfPendingExists(other, reason = "touch_switch_to_${side.name}")
             }
         }
 
-        // DrawingViewからの通知（ストローク確定）
-        binding.drawingViewInfer.onStrokeCommitted = {
-            if (binding.autoInferSwitch.isChecked) {
-                scheduleAutoInfer("stroke_committed")
-            }
+        binding.dualDrawingViewInfer.onStrokeCommitted = { side ->
+            // ストローク確定で推論（自動）
+            scheduleInferForPending(side, reason = "stroke_committed")
         }
 
-        // ---- Manual Infer ----
-        binding.inferButton.setOnClickListener {
-            lifecycleScope.launch { runInferAndShow() }
+        // ---- Backspace（最後の1文字削除）----
+        binding.deleteLastButton.setOnClickListener {
+            deleteLastFromComposed()
         }
 
         // ---- Clear ----
         binding.clearInferButton.setOnClickListener {
-            binding.drawingViewInfer.clearCanvas()
-            autoInferJob?.cancel()
-            lastInferredChangeCounter = -1L
+            binding.dualDrawingViewInfer.clearBoth()
+
+            inferJobA?.cancel()
+            inferJobB?.cancel()
+            commitOnSwitchJob?.cancel()
+
+            committed.clear()
+            pendingA = ""
+            pendingB = ""
+            updateComposedText()
+
             binding.resultText.text = "(cleared)"
             clearPreview()
         }
+    }
+
+    private fun otherSide(side: DualDrawingComposerView.Side): DualDrawingComposerView.Side {
+        return if (side == DualDrawingComposerView.Side.A) {
+            DualDrawingComposerView.Side.B
+        } else {
+            DualDrawingComposerView.Side.A
+        }
+    }
+
+    private fun updateComposedText() {
+        // 未確定は [] で表示（見た目を変えたくないなら [] を外してください）
+        val pendingDisplay = buildString {
+            if (pendingA.isNotBlank()) append("[").append(pendingA).append("]")
+            if (pendingB.isNotBlank()) append("[").append(pendingB).append("]")
+        }
+
+        val full = committed.toString() + pendingDisplay
+        binding.composedText.text = if (full.isBlank()) "(composed)" else full
     }
 
     private fun saveStrokeWidthPx(px: Int) {
         prefs.edit().putInt(KEY_STROKE_WIDTH_PX, px.coerceAtLeast(1)).apply()
     }
 
-    private fun scheduleAutoInfer(reason: String) {
-        autoInferJob?.cancel()
-        autoInferJob = lifecycleScope.launch {
-            delay(250) // debounce
-            val cc = binding.drawingViewInfer.getChangeCounter()
-            if (cc == lastInferredChangeCounter) return@launch
+    private fun drawingViewFor(side: DualDrawingComposerView.Side): DrawingView {
+        return if (side == DualDrawingComposerView.Side.A) {
+            binding.dualDrawingViewInfer.viewA
+        } else {
+            binding.dualDrawingViewInfer.viewB
+        }
+    }
 
-            runInferAndShow()
-            lastInferredChangeCounter = cc
+    /**
+     * composedText の「最後の1文字」を削除する。
+     * 優先順位: pendingB -> pendingA -> committed
+     * pending を消す場合は、その side のキャンバスもクリアする（取り消しとして自然）
+     */
+    private fun deleteLastFromComposed() {
+        // まず pending を優先して削除
+        if (pendingB.isNotBlank()) {
+            pendingB = ""
+            drawingViewFor(DualDrawingComposerView.Side.B).clearCanvas()
+            inferJobB?.cancel()
+            updateComposedText()
+            binding.resultText.text = "Deleted: pendingB"
+            clearPreview()
+            return
+        }
+
+        if (pendingA.isNotBlank()) {
+            pendingA = ""
+            drawingViewFor(DualDrawingComposerView.Side.A).clearCanvas()
+            inferJobA?.cancel()
+            updateComposedText()
+            binding.resultText.text = "Deleted: pendingA"
+            clearPreview()
+            return
+        }
+
+        // committed の最後のコードポイントを削除（サロゲート対応）
+        if (committed.isNotEmpty()) {
+            removeLastCodePoint(committed)
+            updateComposedText()
+            binding.resultText.text = "Deleted: committed last char"
+            // committed は履歴なのでプレビューはそのままでも良いが、混乱防止で消す
+            clearPreview()
+            return
+        }
+
+        // 何もない
+        binding.resultText.text = "(nothing to delete)"
+        clearPreview()
+    }
+
+    private fun removeLastCodePoint(sb: StringBuilder) {
+        if (sb.isEmpty()) return
+        val end = sb.length
+        val cp = Character.codePointBefore(sb, end)
+        val removeLen = Character.charCount(cp)
+        sb.delete(end - removeLen, end)
+    }
+
+    /**
+     * 反対側タッチ時に「pending があればそれを確定」する。
+     * pending が無いがインクがある場合は、即推論して確定しても良い（安全策）
+     */
+    private suspend fun commitSideIfPendingExists(
+        sideToCommit: DualDrawingComposerView.Side,
+        reason: String
+    ) {
+        val dv = drawingViewFor(sideToCommit)
+
+        val pending = if (sideToCommit == DualDrawingComposerView.Side.A) pendingA else pendingB
+
+        if (pending.isBlank()) {
+            // pending がまだ無いが ink はあるケース（推論が間に合っていない等）
+            // -> ここで即推論して pending を作ってから確定
+            if (dv.hasInk()) {
+                inferPendingNow(sideToCommit, reason = "commit_fallback_infer")
+            }
+        }
+
+        val finalPending =
+            if (sideToCommit == DualDrawingComposerView.Side.A) pendingA else pendingB
+        if (finalPending.isBlank()) return
+
+        // 確定
+        committed.append(finalPending)
+
+        // pending を消す
+        if (sideToCommit == DualDrawingComposerView.Side.A) {
+            pendingA = ""
+        } else {
+            pendingB = ""
+        }
+
+        // 確定した側はクリア
+        dv.clearCanvas()
+
+        updateComposedText()
+
+        binding.resultText.text =
+            "Committed: $finalPending (side=${sideToCommit.name}, reason=$reason)"
+    }
+
+    /**
+     * stroke committed 後に pending を更新（debounce）
+     */
+    private fun scheduleInferForPending(side: DualDrawingComposerView.Side, reason: String) {
+        if (side == DualDrawingComposerView.Side.A) {
+            inferJobA?.cancel()
+            inferJobA = lifecycleScope.launch {
+                delay(180)
+                inferPendingNow(side, reason)
+            }
+        } else {
+            inferJobB?.cancel()
+            inferJobB = lifecycleScope.launch {
+                delay(180)
+                inferPendingNow(side, reason)
+            }
+        }
+    }
+
+    private suspend fun inferPendingNow(side: DualDrawingComposerView.Side, reason: String) {
+        val dv = drawingViewFor(side)
+        if (!dv.hasInk()) {
+            // インクが無いなら pending を消す
+            if (side == DualDrawingComposerView.Side.A) pendingA = "" else pendingB = ""
+            updateComposedText()
+            return
+        }
+
+        try {
+            val strokeWidthPx = binding.strokeSeekBarInfer.progress.toFloat().coerceAtLeast(1f)
+            val whiteBmp = exportForInfer(dv, strokeWidthPx)
+
+            val wantPreview = binding.previewSwitch.isChecked
+
+            val uiResult = withContext(Dispatchers.Default) {
+                runSingleInfer(whiteBmp, wantPreview)
+            }
+
+            val detected = extractDetectedText(uiResult.text)
+
+            if (side == DualDrawingComposerView.Side.A) {
+                pendingA = detected
+            } else {
+                pendingB = detected
+            }
+
+            updateComposedText()
+
+            // 参考表示（必要なら削除可）
+            binding.resultText.text = buildString {
+                append("Detected (pending) side=").append(side.name)
+                    .append(" reason=").append(reason).append("\n")
+                append("pending=").append(if (detected.isBlank()) "(empty)" else detected)
+                    .append("\n\n")
+                append(uiResult.text)
+            }.trimEnd()
+
+            if (wantPreview) setPreview(uiResult.preview) else clearPreview()
+
+        } catch (e: Exception) {
+            binding.resultText.text = "Error: ${e.message}"
+            clearPreview()
         }
     }
 
@@ -169,33 +350,18 @@ class InferFragment : Fragment(R.layout.fragment_infer) {
         val preview: Bitmap?
     )
 
-    private suspend fun runInferAndShow() {
-        try {
-            val strokeWidthPx = binding.strokeSeekBarInfer.progress.toFloat().coerceAtLeast(1f)
-            val whiteBmpForSegAndSingle = exportForInfer(binding.drawingViewInfer, strokeWidthPx)
+    /**
+     * “検知されている文字” として pending に入れる文字を抽出
+     * - single: 1位候補
+     */
+    private fun extractDetectedText(resultText: String): String {
+        val top1 = Regex("""^1\)\s*([^\s]+)\s+""", RegexOption.MULTILINE)
+            .find(resultText)?.groupValues?.getOrNull(1)?.trim()
 
-            val splitMode = binding.splitInferSwitch.isChecked
-            val wantPreview = binding.previewSwitch.isChecked
-
-            val uiResult = withContext(Dispatchers.Default) {
-                if (!splitMode) {
-                    runSingleInfer(whiteBmpForSegAndSingle, wantPreview)
-                } else {
-                    runSplitInfer(whiteBmpForSegAndSingle, wantPreview)
-                }
-            }
-
-            binding.resultText.text = uiResult.text
-            if (wantPreview) {
-                setPreview(uiResult.preview)
-            } else {
-                clearPreview()
-            }
-        } catch (e: Exception) {
-            binding.resultText.text = "Error: ${e.message}"
-            clearPreview()
-        }
+        return top1.orEmpty()
     }
+
+    // ---------------- infer code ----------------
 
     private fun runSingleInfer(whiteBmp: Bitmap, wantPreview: Boolean): InferUiResult {
         val normalized = BitmapPreprocessor.tightCenterSquare(
@@ -218,89 +384,6 @@ class InferFragment : Fragment(R.layout.fragment_infer) {
         return InferUiResult(text = text, preview = preview)
     }
 
-    private fun runSplitInfer(whiteBmp: Bitmap, wantPreview: Boolean): InferUiResult {
-        val cfg = InkSegmenter.SegConfig(
-            inkThresh = 245,
-            minArea = 25,
-            clusterPadPx = 10,
-            maxChars = 16,
-            wideBoxSplitRatio = 1.35f,
-            projectionMinGapPx = 4,
-            projectionWindowPx = 3
-        )
-
-        val rects = InkSegmenter.segment(whiteBmp, cfg)
-        if (rects.isEmpty()) {
-            return InferUiResult(text = "No ink detected.", preview = null)
-        }
-
-        val perChar = ArrayList<List<CtcCandidate>>(rects.size)
-        val normalizedCharsForPreview = ArrayList<Bitmap>(rects.size)
-        val top1 = StringBuilder()
-
-        for (r in rects) {
-            val cropped = cropWithPad(whiteBmp, r, pad = 10)
-
-            val normalized = BitmapPreprocessor.tightCenterSquare(
-                srcWhiteBg = cropped,
-                inkThresh = cfg.inkThresh,
-                innerPadPx = 6,
-                outerMarginPx = 18,
-                minSidePx = 72
-            )
-
-            val candidates = recognizer.inferTopK(
-                bitmap = normalized,
-                topK = 5,
-                beamWidth = 25,
-                perStepTop = 25
-            )
-
-            val best = candidates.firstOrNull()?.text.orEmpty()
-            if (best.isNotEmpty()) top1.append(best)
-            perChar.add(candidates)
-
-            if (wantPreview) {
-                normalizedCharsForPreview.add(normalized)
-            }
-        }
-
-        val sb = StringBuilder()
-        sb.append("Mode: split\n")
-        sb.append("Detected chars: ${rects.size}\n")
-        sb.append("Predicted: ").append(if (top1.isNotEmpty()) top1.toString() else "(empty)")
-            .append("\n\n")
-
-        sb.append("Per-char TopK:\n")
-        for (i in perChar.indices) {
-            sb.append("[").append(i + 1).append("]\n")
-            sb.append(formatCandidatesList(perChar[i]))
-            sb.append("\n")
-        }
-
-        val preview = if (wantPreview) {
-            val cols = min(4, max(1, normalizedCharsForPreview.size))
-            BitmapPreprocessor.composeGrid(
-                images = normalizedCharsForPreview,
-                cellSizePx = 128,
-                cols = cols,
-                padPx = 10
-            )
-        } else null
-
-        return InferUiResult(text = sb.toString().trimEnd(), preview = preview)
-    }
-
-    private fun cropWithPad(src: Bitmap, r: Rect, pad: Int): Bitmap {
-        val left = (r.left - pad).coerceAtLeast(0)
-        val top = (r.top - pad).coerceAtLeast(0)
-        val right = (r.right + pad).coerceAtMost(src.width)
-        val bottom = (r.bottom + pad).coerceAtMost(src.height)
-        val w = (right - left).coerceAtLeast(1)
-        val h = (bottom - top).coerceAtLeast(1)
-        return Bitmap.createBitmap(src, left, top, w, h)
-    }
-
     private fun formatCandidatesSingle(candidates: List<CtcCandidate>): String {
         if (candidates.isEmpty()) return "No result"
         val sb = StringBuilder()
@@ -310,15 +393,6 @@ class InferFragment : Fragment(R.layout.fragment_infer) {
             sb.append("${i + 1}) ${c.text}  ${"%.1f".format(c.percent)}%\n")
         }
         return sb.toString().trimEnd()
-    }
-
-    private fun formatCandidatesList(candidates: List<CtcCandidate>): String {
-        if (candidates.isEmpty()) return "  (no result)\n"
-        val sb = StringBuilder()
-        candidates.forEachIndexed { i, c ->
-            sb.append("  ${i + 1}) ${c.text}  ${"%.1f".format(c.percent)}%\n")
-        }
-        return sb.toString()
     }
 
     private fun loadRecognizerFromPrefsOrDefault() {
@@ -434,10 +508,6 @@ class InferFragment : Fragment(R.layout.fragment_infer) {
         binding.modelStatusText.text = "Model: assets/$DEFAULT_MODEL_ASSET$s"
     }
 
-    /**
-     * - 描画が端でクリップされる問題を防ぐため、ストロークのエクスポート時点で外枠(border)を付ける
-     * - 背景は白に統一して返す（InkSegmenter/Recognizer前提）
-     */
     private fun exportForInfer(drawingView: DrawingView, strokeWidthPx: Float): Bitmap {
         val border = max(24, (strokeWidthPx * 2.2f).toInt())
         val strokes = drawingView.exportStrokesBitmapTransparent(borderPx = border)
@@ -471,7 +541,6 @@ class InferFragment : Fragment(R.layout.fragment_infer) {
         private const val PREFS_NAME = "infer_prefs"
         private const val KEY_MODEL_URI = "infer_model_uri"
 
-        // 追加：線の太さを保存
         private const val KEY_STROKE_WIDTH_PX = "infer_stroke_width_px"
         private const val DEFAULT_STROKE_WIDTH_PX = 14
 

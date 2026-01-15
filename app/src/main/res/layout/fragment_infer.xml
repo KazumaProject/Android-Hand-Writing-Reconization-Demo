@@ -44,13 +44,12 @@
                 android:text="Reset" />
         </LinearLayout>
 
-        <!-- Drawing area -->
-        <com.kazumaproject.hand_writting_save_img.DrawingView
-            android:id="@+id/drawingViewInfer"
+        <!-- Dual drawing area -->
+        <com.kazumaproject.hand_writting_save_img.DualDrawingComposerView
+            android:id="@+id/dualDrawingViewInfer"
             android:layout_width="match_parent"
-            android:layout_height="260dp"
-            android:layout_marginTop="10dp"
-            android:background="@android:color/white" />
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp" />
 
         <!-- Stroke width -->
         <LinearLayout
@@ -88,26 +87,22 @@
             android:orientation="horizontal">
 
             <androidx.appcompat.widget.SwitchCompat
-                android:id="@+id/autoInferSwitch"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Auto infer" />
-
-            <androidx.appcompat.widget.SwitchCompat
-                android:id="@+id/splitInferSwitch"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="16dp"
-                android:text="Split" />
-
-            <androidx.appcompat.widget.SwitchCompat
                 android:id="@+id/previewSwitch"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="16dp"
                 android:checked="true"
                 android:text="Preview" />
         </LinearLayout>
+
+        <!-- Composed text (built string) -->
+        <TextView
+            android:id="@+id/composedText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="(composed)"
+            android:textSize="16sp"
+            android:typeface="monospace" />
 
         <!-- Action buttons -->
         <LinearLayout
@@ -118,11 +113,11 @@
             android:orientation="horizontal">
 
             <Button
-                android:id="@+id/inferButton"
+                android:id="@+id/deleteLastButton"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="Infer" />
+                android:text="Delete last" />
 
             <Button
                 android:id="@+id/clearInferButton"
@@ -133,7 +128,7 @@
                 android:text="Clear" />
         </LinearLayout>
 
-        <!-- Result (色はテーマに任せる / 余白を少し整える) -->
+        <!-- Result -->
         <TextView
             android:id="@+id/resultText"
             android:layout_width="match_parent"
@@ -143,7 +138,7 @@
             android:textSize="14sp"
             android:typeface="monospace" />
 
-        <!-- Preview: 推論結果の下部に配置 -->
+        <!-- Preview -->
         <TextView
             android:id="@+id/previewLabel"
             android:layout_width="match_parent"

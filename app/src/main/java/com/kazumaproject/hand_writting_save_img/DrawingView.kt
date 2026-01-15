@@ -33,9 +33,25 @@ class DrawingView @JvmOverloads constructor(
     private var lastX = 0f
     private var lastY = 0f
 
+    /**
+     * 履歴（Undo/Redo可否）が変化したときに呼ばれるコールバック
+     */
     var onHistoryChanged: (() -> Unit)? = null
+
+    /**
+     * ストローク確定（ACTION_UP）したときに呼ばれる（自動推論の起点）
+     */
     var onStrokeCommitted: (() -> Unit)? = null
 
+    /**
+     * ストローク開始（ACTION_DOWN）したときに呼ばれる
+     * 2画面入力で「相手側を確定する」トリガとして使う
+     */
+    var onStrokeStarted: (() -> Unit)? = null
+
+    /**
+     * 描画内容が変化した回数（自動推論の重複実行を防ぐ）
+     */
     private var changeCounter: Long = 0
     fun getChangeCounter(): Long = changeCounter
 
@@ -52,16 +68,18 @@ class DrawingView @JvmOverloads constructor(
         strokeWidth = currentStrokeWidthPx
     }
 
-    // ---------------- Guide (added) ----------------
+    // ---------------- Guide (restored) ----------------
 
+    // デフォルトで表示（外枠＋中心十字）
     private var guideEnabled: Boolean = true
     private var guideShowCenterCross: Boolean = true
+    private var guideShowBorder: Boolean = true
 
     // 例: グリッドも出したい場合に使う（0なら無効）
     private var guideGridStepPx: Int = 0
 
     private val guidePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(70, 0, 0, 0) // 薄い黒
+        color = Color.argb(70, 0, 0, 0)
         style = Paint.Style.STROKE
         strokeWidth = 2f
     }
@@ -73,6 +91,11 @@ class DrawingView @JvmOverloads constructor(
 
     fun setGuideCenterCrossEnabled(enabled: Boolean) {
         guideShowCenterCross = enabled
+        invalidate()
+    }
+
+    fun setGuideBorderEnabled(enabled: Boolean) {
+        guideShowBorder = enabled
         invalidate()
     }
 
@@ -128,10 +151,17 @@ class DrawingView @JvmOverloads constructor(
         bumpChange()
     }
 
+    /**
+     * インク（ストローク）が存在するか
+     * - 相手側を確定する条件に使う
+     */
+    fun hasInk(): Boolean {
+        return strokes.isNotEmpty() || currentPath != null
+    }
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
 
-        // ガイドを先に描く（線の下に敷く）
         if (guideEnabled) {
             drawGuide(canvas)
         }
@@ -153,15 +183,18 @@ class DrawingView @JvmOverloads constructor(
         val h = height.toFloat()
         if (w <= 1f || h <= 1f) return
 
-        // 中心十字
+        if (guideShowBorder) {
+            val half = guidePaint.strokeWidth / 2f
+            canvas.drawRect(half, half, w - half, h - half, guidePaint)
+        }
+
         if (guideShowCenterCross) {
             val cx = w / 2f
             val cy = h / 2f
-            canvas.drawLine(cx, 0f, cx, h, guidePaint) // 縦
-            canvas.drawLine(0f, cy, w, cy, guidePaint) // 横
+            canvas.drawLine(cx, 0f, cx, h, guidePaint)
+            canvas.drawLine(0f, cy, w, cy, guidePaint)
         }
 
-        // グリッド（任意）
         val step = guideGridStepPx
         if (step > 0) {
             var x = step.toFloat()
@@ -185,6 +218,8 @@ class DrawingView @JvmOverloads constructor(
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 parent?.requestDisallowInterceptTouchEvent(true)
+                onStrokeStarted?.invoke()
+
                 currentPath = Path().apply { moveTo(x, y) }
                 lastX = x
                 lastY = y
@@ -243,6 +278,7 @@ class DrawingView @JvmOverloads constructor(
         canvas.save()
         canvas.translate(b.toFloat(), b.toFloat())
 
+        // export にはガイドは描かない
         for (s in strokes) {
             val p = Paint(paintTemplate).apply { strokeWidth = s.strokeWidthPx }
             canvas.drawPath(s.path, p)
