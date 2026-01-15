@@ -33,13 +33,14 @@ class DrawingView @JvmOverloads constructor(
     private var lastX = 0f
     private var lastY = 0f
 
-    /**
-     * 履歴（Undo/Redo可否）が変化したときに呼ばれるコールバック
-     * MainActivity 側でボタン enable 更新に使う
-     */
     var onHistoryChanged: (() -> Unit)? = null
+    var onStrokeCommitted: (() -> Unit)? = null
 
-    private fun notifyHistoryChanged() {
+    private var changeCounter: Long = 0
+    fun getChangeCounter(): Long = changeCounter
+
+    private fun bumpChange() {
+        changeCounter++
         onHistoryChanged?.invoke()
     }
 
@@ -51,6 +52,50 @@ class DrawingView @JvmOverloads constructor(
         strokeWidth = currentStrokeWidthPx
     }
 
+    // ---------------- Guide (added) ----------------
+
+    private var guideEnabled: Boolean = true
+    private var guideShowCenterCross: Boolean = true
+
+    // 例: グリッドも出したい場合に使う（0なら無効）
+    private var guideGridStepPx: Int = 0
+
+    private val guidePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(70, 0, 0, 0) // 薄い黒
+        style = Paint.Style.STROKE
+        strokeWidth = 2f
+    }
+
+    fun setGuideEnabled(enabled: Boolean) {
+        guideEnabled = enabled
+        invalidate()
+    }
+
+    fun setGuideCenterCrossEnabled(enabled: Boolean) {
+        guideShowCenterCross = enabled
+        invalidate()
+    }
+
+    /**
+     * stepPx <= 0 ならグリッド無効
+     */
+    fun setGuideGridStepPx(stepPx: Int) {
+        guideGridStepPx = stepPx.coerceAtLeast(0)
+        invalidate()
+    }
+
+    fun setGuideAlpha(alpha: Int) {
+        guidePaint.alpha = alpha.coerceIn(0, 255)
+        invalidate()
+    }
+
+    fun setGuideStrokeWidthPx(px: Float) {
+        guidePaint.strokeWidth = px.coerceAtLeast(1f)
+        invalidate()
+    }
+
+    // ------------------------------------------------
+
     fun setStrokeWidthPx(px: Float) {
         currentStrokeWidthPx = px.coerceAtLeast(1f)
         invalidate()
@@ -61,7 +106,7 @@ class DrawingView @JvmOverloads constructor(
         redoStack.clear()
         currentPath = null
         invalidate()
-        notifyHistoryChanged()
+        bumpChange()
     }
 
     fun canUndo(): Boolean = strokes.isNotEmpty()
@@ -72,7 +117,7 @@ class DrawingView @JvmOverloads constructor(
         val s = strokes.removeAt(strokes.lastIndex)
         redoStack.add(s)
         invalidate()
-        notifyHistoryChanged()
+        bumpChange()
     }
 
     fun redo() {
@@ -80,23 +125,55 @@ class DrawingView @JvmOverloads constructor(
         val s = redoStack.removeAt(redoStack.lastIndex)
         strokes.add(s)
         invalidate()
-        notifyHistoryChanged()
+        bumpChange()
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
 
-        // 履歴ストローク描画
+        // ガイドを先に描く（線の下に敷く）
+        if (guideEnabled) {
+            drawGuide(canvas)
+        }
+
         for (s in strokes) {
             val p = Paint(paintTemplate).apply { strokeWidth = s.strokeWidthPx }
             canvas.drawPath(s.path, p)
         }
 
-        // 描画中ストローク
         val cp = currentPath
         if (cp != null) {
             val p = Paint(paintTemplate).apply { strokeWidth = currentStrokeWidthPx }
             canvas.drawPath(cp, p)
+        }
+    }
+
+    private fun drawGuide(canvas: Canvas) {
+        val w = width.toFloat()
+        val h = height.toFloat()
+        if (w <= 1f || h <= 1f) return
+
+        // 中心十字
+        if (guideShowCenterCross) {
+            val cx = w / 2f
+            val cy = h / 2f
+            canvas.drawLine(cx, 0f, cx, h, guidePaint) // 縦
+            canvas.drawLine(0f, cy, w, cy, guidePaint) // 横
+        }
+
+        // グリッド（任意）
+        val step = guideGridStepPx
+        if (step > 0) {
+            var x = step.toFloat()
+            while (x < w) {
+                canvas.drawLine(x, 0f, x, h, guidePaint)
+                x += step
+            }
+            var y = step.toFloat()
+            while (y < h) {
+                canvas.drawLine(0f, y, w, y, guidePaint)
+                y += step
+            }
         }
     }
 
@@ -134,15 +211,11 @@ class DrawingView @JvmOverloads constructor(
                 val cp = currentPath
                 if (cp != null) {
                     cp.lineTo(x, y)
-
-                    // ここでストローク確定 → 履歴に追加
                     strokes.add(Stroke(cp, currentStrokeWidthPx))
-
-                    // 新規ストロークが追加されたら redo は破棄
                     redoStack.clear()
 
-                    // 重要: ここで履歴変化通知（Undo enable を更新できるようにする）
-                    notifyHistoryChanged()
+                    bumpChange()
+                    onStrokeCommitted?.invoke()
                 }
                 currentPath = null
                 parent?.requestDisallowInterceptTouchEvent(false)
@@ -154,31 +227,34 @@ class DrawingView @JvmOverloads constructor(
         return super.onTouchEvent(event)
     }
 
-    /**
-     * 現在の描画（ストロークのみ）を「透過背景」でBitmap化して返す。
-     */
-    fun exportStrokesBitmapTransparent(): Bitmap {
-        val w = width.coerceAtLeast(1)
-        val h = height.coerceAtLeast(1)
+    fun exportStrokesBitmapTransparent(borderPx: Int = 0): Bitmap {
+        val w0 = width.coerceAtLeast(1)
+        val h0 = height.coerceAtLeast(1)
+
+        val b = borderPx.coerceAtLeast(0)
+        val w = (w0 + b * 2).coerceAtLeast(1)
+        val h = (h0 + b * 2).coerceAtLeast(1)
+
         val bmp = createBitmap(w, h)
         val canvas = Canvas(bmp)
 
-        // 透明クリア
         canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
 
-        // 履歴ストローク描画
+        canvas.save()
+        canvas.translate(b.toFloat(), b.toFloat())
+
         for (s in strokes) {
             val p = Paint(paintTemplate).apply { strokeWidth = s.strokeWidthPx }
             canvas.drawPath(s.path, p)
         }
 
-        // 描画中ストローク（念のため）
         val cp = currentPath
         if (cp != null) {
             val p = Paint(paintTemplate).apply { strokeWidth = currentStrokeWidthPx }
             canvas.drawPath(cp, p)
         }
 
+        canvas.restore()
         return bmp
     }
 }

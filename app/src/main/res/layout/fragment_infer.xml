@@ -1,116 +1,167 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
-    android:id="@+id/rootInfer"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/inferScroll"
     android:layout_width="match_parent"
-    android:layout_height="match_parent">
+    android:layout_height="match_parent"
+    android:fillViewport="true">
 
-    <!-- Current model -->
-    <TextView
-        android:id="@+id/modelStatusText"
-        android:layout_width="0dp"
+    <LinearLayout
+        android:id="@+id/inferRoot"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:padding="12dp"
-        android:text="Model:"
-        android:textStyle="bold"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent" />
+        android:orientation="vertical"
+        android:padding="12dp">
 
-    <Button
-        android:id="@+id/chooseModelButton"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:text="Choose .pt"
-        app:layout_constraintEnd_toStartOf="@id/resetModelButton"
-        app:layout_constraintHorizontal_chainStyle="spread"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/modelStatusText" />
+        <!-- Model status (色はテーマに任せる) -->
+        <TextView
+            android:id="@+id/modelStatusText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingBottom="8dp"
+            android:text="Model: assets/model_torchscript.pt"
+            android:textSize="14sp" />
 
-    <Button
-        android:id="@+id/resetModelButton"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_marginStart="12dp"
-        android:layout_marginTop="8dp"
-        android:text="Reset"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toEndOf="@id/chooseModelButton"
-        app:layout_constraintTop_toBottomOf="@id/modelStatusText" />
+        <!-- Buttons row -->
+        <LinearLayout
+            android:id="@+id/modelButtonsRow"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
 
-    <!-- Stroke width -->
-    <TextView
-        android:id="@+id/strokeLabelInfer"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
-        android:text="Stroke width"
-        app:layout_constraintEnd_toStartOf="@id/strokeValueInfer"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/chooseModelButton" />
+            <Button
+                android:id="@+id/chooseModelButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Choose .pt" />
 
-    <TextView
-        android:id="@+id/strokeValueInfer"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginStart="8dp"
-        android:layout_marginTop="12dp"
-        android:text="32 px"
-        app:layout_constraintStart_toEndOf="@id/strokeLabelInfer"
-        app:layout_constraintTop_toBottomOf="@id/chooseModelButton" />
+            <Button
+                android:id="@+id/resetModelButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
+                android:text="Reset" />
+        </LinearLayout>
 
-    <SeekBar
-        android:id="@+id/strokeSeekBarInfer"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:max="60"
-        android:progress="32"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/strokeLabelInfer" />
+        <!-- Drawing area -->
+        <com.kazumaproject.hand_writting_save_img.DrawingView
+            android:id="@+id/drawingViewInfer"
+            android:layout_width="match_parent"
+            android:layout_height="260dp"
+            android:layout_marginTop="10dp"
+            android:background="@android:color/white" />
 
-    <com.kazumaproject.hand_writting_save_img.DrawingView
-        android:id="@+id/drawingViewInfer"
-        android:layout_width="0dp"
-        android:layout_height="0dp"
-        android:layout_marginTop="12dp"
-        android:background="#FFFFFF"
-        app:layout_constraintBottom_toTopOf="@id/inferButton"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/strokeSeekBarInfer" />
+        <!-- Stroke width -->
+        <LinearLayout
+            android:id="@+id/strokeRow"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
 
-    <Button
-        android:id="@+id/inferButton"
-        android:layout_width="0dp"
-        android:layout_height="80dp"
-        android:layout_marginBottom="12dp"
-        android:text="Infer"
-        app:layout_constraintBottom_toTopOf="@id/resultText"
-        app:layout_constraintEnd_toStartOf="@id/clearInferButton"
-        app:layout_constraintStart_toStartOf="parent" />
+            <TextView
+                android:id="@+id/strokeValueInfer"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="10dp"
+                android:text="14 px"
+                android:textSize="14sp" />
 
-    <Button
-        android:id="@+id/clearInferButton"
-        android:layout_width="0dp"
-        android:layout_height="80dp"
-        android:layout_marginStart="12dp"
-        android:layout_marginBottom="12dp"
-        android:text="Clear"
-        app:layout_constraintBottom_toTopOf="@id/resultText"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toEndOf="@id/inferButton" />
+            <SeekBar
+                android:id="@+id/strokeSeekBarInfer"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:max="60"
+                android:progress="14" />
+        </LinearLayout>
 
-    <TextView
-        android:id="@+id/resultText"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:padding="12dp"
-        android:text="(result)"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent" />
+        <!-- Switches -->
+        <LinearLayout
+            android:id="@+id/switchRow"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
 
-</androidx.constraintlayout.widget.ConstraintLayout>
+            <androidx.appcompat.widget.SwitchCompat
+                android:id="@+id/autoInferSwitch"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Auto infer" />
+
+            <androidx.appcompat.widget.SwitchCompat
+                android:id="@+id/splitInferSwitch"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="16dp"
+                android:text="Split" />
+
+            <androidx.appcompat.widget.SwitchCompat
+                android:id="@+id/previewSwitch"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="16dp"
+                android:checked="true"
+                android:text="Preview" />
+        </LinearLayout>
+
+        <!-- Action buttons -->
+        <LinearLayout
+            android:id="@+id/actionButtonsRow"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/inferButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Infer" />
+
+            <Button
+                android:id="@+id/clearInferButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
+                android:text="Clear" />
+        </LinearLayout>
+
+        <!-- Result (色はテーマに任せる / 余白を少し整える) -->
+        <TextView
+            android:id="@+id/resultText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="(result)"
+            android:textSize="14sp"
+            android:typeface="monospace" />
+
+        <!-- Preview: 推論結果の下部に配置 -->
+        <TextView
+            android:id="@+id/previewLabel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:alpha="0.8"
+            android:text="Input preview (normalized)"
+            android:textSize="12sp" />
+
+        <ImageView
+            android:id="@+id/previewImageViewInfer"
+            android:layout_width="match_parent"
+            android:layout_height="220dp"
+            android:layout_marginTop="6dp"
+            android:adjustViewBounds="true"
+            android:background="@android:color/white"
+            android:contentDescription="normalized preview"
+            android:scaleType="fitCenter" />
+
+    </LinearLayout>
+</ScrollView>
